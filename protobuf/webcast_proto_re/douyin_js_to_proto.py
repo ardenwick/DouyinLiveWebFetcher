@@ -15,6 +15,7 @@ python3 douyin_js_to_proto.py js/*.js
 # See https://github.com/danielgtaylor/python-betterproto/issues/682
 '''
 # See Also
+# https://github.com/Remember-the-past/douyin_proto
 # https://github.com/scx567888/live-room-watcher/blob/master/src/main/proto/douyin_hack/webcast/
 # https://github.com/HaoDong108/DouyinBarrageGrab/blob/main/BarrageGrab/proto/
 
