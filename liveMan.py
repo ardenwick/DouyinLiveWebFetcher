@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from multiprocessing import Condition, Lock
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from unittest.mock import patch
 from urllib3.util.url import parse_url
 import codecs
@@ -370,7 +370,7 @@ class DouyinLiveWebFetcher:
         method_bindings = {
             'WebcastChatMessage': self._parseChatMsg,  # 聊天消息
             'WebcastGiftMessage': self._parseGiftMsg,  # 礼物消息
-            'WebcastLikeMessage': self._parseLikeMsg,  # 点赞消息
+            'WebcastLikeMessage': self._muteMsg,  # 点赞消息 _parseLikeMsg
             'WebcastMemberMessage': self._parseMemberMsg,  # 进入直播间消息
             'WebcastSocialMessage': self._parseSocialMsg,  # 关注消息
             'WebcastRoomUserSeqMessage': self._parseRoomUserSeqMsg,  # 直播间统计
@@ -380,7 +380,7 @@ class DouyinLiveWebFetcher:
             'WebcastRoomStatsMessage': self._parseRoomStatsMsg,  # 直播间统计信息
             'WebcastRoomMessage': self._parseRoomMsg,  # 直播间信息
             'WebcastRoomRankMessage': self._parseRankMsg,  # 直播间排行榜信息
-            # 'WebcastRoomStreamAdaptationMessage': self._parseRoomStreamAdaptationMsg,  # 直播间流配置
+            'WebcastRoomStreamAdaptationMessage': self._muteMsg,  # 直播间流配置 _parseRoomStreamAdaptationMsg
             'WebcastLuckyBoxMessage': self._parseLuckyBoxMessage,  # 红包
             'WebcastPreviewCjRpMessage': self._parsePreviewCjRpMessage,  # 红包
             'WebcastLuckyBoxRewardMessage': self._parseLuckyBoxRewardMessage,  # 抽奖结果
@@ -396,7 +396,17 @@ class DouyinLiveWebFetcher:
             'WebcastAnchorLinkmicSilenceMessage': self._parseAnchorLinkmicSilenceMessage,  # 连线静音
             'WebcastRoomNotifyMessage': self._parseNotifyMessage,  # 直播间公告
             'WebcastRoomMessage': self._parseRoomMessage,  # 直播间消息
+            'WebcastNotifyEffectMessage': self._parseNotifyEffectMessage,  # 特效公告
             'WebcastInRoomBannerMessage': self._parseInRoomBannerMessage,  # 横幅
+            'WebcastLightGiftMessage': self._muteMsg,  # 多人连线时给某个主播礼物的消息
+            'WebcastGiftSortMessage': self._muteMsg,  # UI礼物布局，无可用信息
+            'WebcastChatLikeMessage': self._muteMsg,  # 未知
+            'WebcastLuckyBoxTempStatusMessage': self._muteMsg,  # 无可用信息
+            'WebcastBattleStatusMessage': self._muteMsg,  # 无对应 Message 定义
+            'WebcastLinkerContributeMessage': self._muteMsg,  # 未知
+            'WebcastProfitInteractionScoreMessage': self._muteMsg,  # 利润互动分数？
+            'WebcastRanklistHourEntranceMessage': self._muteMsg,  # 小时榜、百强榜。人气榜呢？
+            'WebcastBattleTeamTaskMessage': self._muteMsg,  # PK分数加成消息
         }
 
         # 根据proto结构体解析对象
@@ -509,15 +519,21 @@ class DouyinLiveWebFetcher:
         m.ParseFromString(data)
         return m
 
+    def _muteMsg(self, _):
+        return None
+
     def _parseChatMsg(self, payload):
         """聊天消息"""
         m = self._parseFromString('ChatMessage', payload)
-        print(f"【聊天】[{m.user.id}]{m.user.nickname}: {m.content}")
+        u = m.user
+        badge = f"({u.pay_grade.level} {u.fans_club.data.level})"
+        print(f"【聊天】{badge} {m.user.nickname}：{m.content}")
 
     def _parseGiftMsg(self, payload):
         """礼物消息"""
         m = self._parseFromString('GiftMessage', payload)
-        print(f"【礼物】{m.user.nickname} 送出了 {m.gift.name}x{m.combo_count}")
+        repeat_end_hint = '（连击结束）' if (m.repeat_end and m.combo_count > 1) else ''
+        print(f"【礼物】{m.user.nickname} 送出了 {m.gift.name} ×{m.combo_count}{repeat_end_hint}")
 
     def _parseLikeMsg(self, payload):
         '''点赞消息'''
@@ -530,9 +546,10 @@ class DouyinLiveWebFetcher:
         u = m.user
         gender = ['X', '男', '女'][u.gender]
         print(
-            f"【进场】[{u.id}][{gender}]{u.nickname} 进入了直播间。"
-            f"消费 {u.pay_grade.level}，灯牌 {u.fans_club.data.level}，"
-            f"关注 {u.follow_info.following_count}，粉丝 {u.follow_info.follower_count}")
+            f"【进场】[{u.id}][{gender}]{u.nickname}("
+            f"{u.pay_grade.level},{u.fans_club.data.level},"
+            f"{u.follow_info.following_count},{u.follow_info.follower_count}"
+            f") 来了")
 
     def _parseSocialMsg(self, payload):
         '''社交消息'''
@@ -544,17 +561,18 @@ class DouyinLiveWebFetcher:
         '''直播间统计'''
         m = self._parseFromString('RoomUserSeqMessage', payload)
         print(
-            f"【统计】在线：{m.total_str}({m.total})，场观：{m.total_pv_for_anchor}({m.total_user})")
+            f"【统计】在线 {m.total_str}({m.total})，场观 {m.total_pv_for_anchor}({m.total_user})")
 
     def _parseFansclubMsg(self, payload):
         '''粉丝团消息'''
         m = self._parseFromString('FansclubMessage', payload)
-        print(f"【粉丝团】{self._MessageToJson(m)}")
+        if m.content:
+            print(f"【粉丝团】{m.content}")
 
     def _parseEmojiChatMsg(self, payload):
         '''聊天表情包消息'''
         m = self._parseFromString('EmojiChatMessage', payload)
-        print(f"【聊天表情包】 {m.user.nickname}: {render_text(m.emoji_content)}")
+        print(f"【表情包】 {m.user.nickname}: {render_text(m.emoji_content)}")
 
     def _parseRoomMsg(self, payload):
         m = self._parseFromString('RoomMessage', payload)
@@ -573,7 +591,9 @@ class DouyinLiveWebFetcher:
         '''直播间状态消息'''
         m = self._parseFromString('ControlMessage', payload)
         if m.action in [3, 4, 6]:
-            print('直播已结束' if not m.tips else m.tips)
+            tips = '直播已结束' if not m.tips else m.tips
+            print(tips)
+            logger.info(tips)
             self.stop()
         else:
             print(self._MessageToJson(m))
@@ -616,25 +636,30 @@ class DouyinLiveWebFetcher:
         if not oneof:
             print(f"Unrecognized LinkMessage: content oneof={oneof}, dump: {self._MessageToJson(m)}")
             return
-        content = getattr(m, oneof)
-        if oneof == 'linked_list_change_content':
-            users = []
-            for e in content.linked_users:
+
+        def print_linked_users(fmt: str, linked_users: List) -> Tuple[int, str]:
+            users: List[str] = []
+            for e in linked_users:
                 users.append(f'{e.user.nickname}({e.user.id})')
                 if e.content.linkmic_content.host_name:
                     users[-1] += ' ' + e.content.linkmic_content.host_name
-            print(f"【连线 变化】{len(users)}位连线主播：{' │ ' .join(users)}")
+            # return len(linked_users), ' │ ' .join(users)
+            if len(linked_users) > 0:
+                print(fmt.format(n_users=len(linked_users), s_users=' │ ' .join(users)))
+
+        content = getattr(m, oneof)
+        if oneof == 'linked_list_change_content':
+            print_linked_users("【连线 变化】{n_users}位连线主播：{s_users}", content.linked_users)
+        elif oneof == 'switch_scene_content':
+            print_linked_users("【连线 切换场景】{n_users}位连线主播：{s_users}", content.switch_scene_data.linked_users)
         elif oneof == 'enter_content':
-            linker_content_map: Dict = content.linker_content_map
-            users = [
-                f'{e.linked_users[0].user.nickname}({e.linked_users[0].user.id})' for e in linker_content_map.values()
-            ]
-            print(f"【连线 入场】{len(users)}位入场主播：{' │ ' .join(users)}")
+            users = [u for m in content.linker_content_map.values() for u in m.linked_users]
+            print_linked_users("【连线 入场】{n_users}位入场主播：{s_users}", users)
+            print_linked_users("【连线 变化】{n_users}位连线主播：{s_users}", content.linked_users)
         elif oneof == 'leave_content':
-            users = [
-                f'{e.user.nickname}({e.user.id})' for e in content.linked_users
-            ]
-            print(f"【连线 离场】{len(users)}位离场主播：{' │ ' .join(users)}")
+            # users = [u for m in content.linker_content_map.values() for u in m.linked_users]
+            # print_linked_users("【连线 离场】{n_users}位离场主播：{s_users}", users)
+            print_linked_users("【连线 离场】{n_users}位离场主播：{s_users}", content.linked_users)
         elif oneof == 'audience_waiting_list_change':
             print(f"【连线 等待连线】{content.total_waiting_cnt}位等待用户")
         else:
@@ -684,8 +709,9 @@ class DouyinLiveWebFetcher:
             all_parsed = True
             for item in highlight_container.highlight_items:
                 if item.data_type == 4:
-                    comment_data = item.comment_data
-                    print(f'【置顶评论】{comment_data.nick_name}：{comment_data.content}')
+                    if item.end_time > time.time():
+                        continue
+                    print(f'【置顶评论】{item.comment_data.nick_name}：{item.comment_data.content}')
                 else:
                     all_parsed = False
             handled = all_parsed
@@ -723,23 +749,33 @@ class DouyinLiveWebFetcher:
         m = self._parseFromString('RoomMessage', payload)
         print('【直播间消息】' + render_text(m.common.display_text))
 
+    def _parseNotifyEffectMessage(self, payload):
+        m = self._parseFromString('NotifyEffectMessage', payload)
+        text = ([item.text_item.text for item in m.text_v2.display_items if item.display_item_type == 2] or [None])[0]
+        if text:
+            print('【特效公告】' + render_text(text))
+
     def _parseInRoomBannerMessage(self, payload):
         m = self._parseFromString('InRoomBannerMessage', payload)
         extra = json.loads(m.extra)
         handled = False
-        unique_key = extra.get('unique_key', '')
-        if unique_key == 'wishList':
-            unique_value = extra.get(unique_key, '')
-            wish_list = json.loads(unique_value)
+        if extra.get('unique_key', '') == 'wishList':
+            wish_list = json.loads(extra['wishList'])
             wishes: List[str] = []
             for wish in wish_list['wish_banner_data']['banner_wish_list']:
                 infos: List[str] = []
                 for info in wish['wish_info_list']:
-                    infos.append(f'''{info['wish_info_extra']['gift_alias']} ({info['wish_info_extra']['diamond_count']} 钻) {info.get('current_progress',0)}/{info['target_progress']}''')
+                    infos.append(
+                        f"{info['wish_info_extra']['gift_alias']} ({info['wish_info_extra']['diamond_count']} 钻)"
+                        f" {info.get('current_progress',0)}/{info['target_progress']}")
                 wishes.append(wish['wish_name'] + '：' + ' '.join(infos))
             print('【横幅 心愿单】' + ' │ '.join(wishes))
-            print(f'  extra.{unique_key}={unique_value}', file=self.json_dump_file)
             handled = True
 
+        print(f'  extra={m.extra}', file=self.json_dump_file)
+
         if not handled:
-            print(self._MessageToJson(m), file=self.cascade_json_dump_file)
+            if ('25v_11_ai_gift' in extra) or ('26w_5_tier' in extra) or (
+                    '23v_8_anchor_flow' in extra) or ('26v_6_game' in extra):
+                return
+            print(f'【InRoomBannerMessage】  {self._MessageToJson(m)}')
