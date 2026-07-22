@@ -1,5 +1,5 @@
-import protobuf.douyin.bizIm.webcast.data as data
-import protobuf.douyin.bizIm.webcast.im as im
+import protobuf.douyin.bizIm.webcast.data_pb2 as data
+import protobuf.douyin.bizIm.webcast.im_pb2 as im
 import re
 
 
@@ -13,7 +13,7 @@ def format_string(t: str) -> str:
 
 
 def format_image(t: data.TextPieceImage) -> str:
-    return '(' + t.image.url_list[0] + ')'
+    return '[image](' + t.image.url_list[0] + ')'
 
 
 def format_gift(t: data.TextPieceGift) -> str:

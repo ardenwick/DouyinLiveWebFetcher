@@ -7,12 +7,6 @@ wget -cP js/ https://lf-webcast-platform.bytetos.com/obj/webcast-platform-cdn/we
 wget -cP js/ https://lf-webcast-platform.bytetos.com/obj/webcast-platform-cdn/webcast/douyin_live/chunks/ecom-schema-im.aea538da.js
 
 python3 douyin_js_to_proto.py js/*.js
-
-# time protoc -I . --python_betterproto_out=. douyin.proto |& head
-# real    5m21.502s
-# usr     0m0.107s
-# sys     0m0.092s
-# See https://github.com/danielgtaylor/python-betterproto/issues/682
 '''
 # See Also
 # https://github.com/Remember-the-past/douyin_proto
@@ -487,17 +481,6 @@ def compile_proto(files: str, include_path='.'):
         [
             "protoc",
             "-I", include_path,
-            f"--python_betterproto_out={output_path}",
-            *files,
-        ],
-        check=True,
-    )
-    output_path = f'../{PROJECT_NAME}_pb2'
-    os.makedirs(output_path, exist_ok=True)
-    run(
-        [
-            "protoc",
-            "-I", include_path,
             f"--python_out={output_path}",
             *files,
         ],
@@ -521,7 +504,6 @@ def compile_proto(files: str, include_path='.'):
 def main():
     shutil.rmtree('../proto', ignore_errors=True)
     shutil.rmtree(f'../{PROJECT_NAME}', ignore_errors=True)
-    shutil.rmtree(f'../{PROJECT_NAME}_pb2', ignore_errors=True)
 
     files = []
     for f in sys.argv[1:]:

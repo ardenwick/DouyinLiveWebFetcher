@@ -8,6 +8,7 @@
 
 from contextlib import contextmanager
 from datetime import datetime
+from multiprocessing import Condition, Lock
 from pathlib import Path
 from typing import Dict, List
 from unittest.mock import patch
@@ -18,7 +19,9 @@ import gzip
 import hashlib
 import importlib
 import json
+import logging
 import math
+import os
 import random
 import re
 import string
@@ -33,18 +36,24 @@ import websocket
 import requests
 from py_mini_racer import MiniRacer
 
-import betterproto
 import google.protobuf.json_format as gp_json_format
 import google.protobuf.message as gp_message
 
-import protobuf.douyin.bizIm.webcast.data as webcast_data
-import protobuf.douyin.bizIm.live as bizIm_live
-import protobuf.douyin.bizIm.webcast.im as webcast_im
-import protobuf.douyin.transport.webcast.im as transport_im
+import protobuf.douyin.bizIm.webcast.data_pb2 as webcast_data
+import protobuf.douyin.bizIm.live_pb2 as bizIm_live
+import protobuf.douyin.bizIm.webcast.im_pb2 as webcast_im
+import protobuf.douyin.transport.webcast.im_pb2 as transport_im
 
 from ac_signature import get__ac_signature
 from cascadewriter import CascadeWriter
 from renderer import render_text
+
+
+logging.basicConfig(
+    level=os.environ.get('LOG_LEVEL', 'DEBUG').upper(),
+    format=r"%(asctime)s %(filename)s:%(lineno)d [%(levelname)s] %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 
 def execute_js(js_file: str):
@@ -98,7 +107,7 @@ def generateSignature(wss, script_file='sign.js'):
         signature = ctx.call("get_sign", md5_param)
         return signature
     except Exception as e:
-        print(e)
+        logger.error(e)
 
     # 以下代码对应js脚本为sign_v0.js
     # context = execjs.compile(script)
@@ -144,21 +153,17 @@ class DouyinLiveWebFetcher:
         self.host = "https://www.douyin.com/"
         self.live_url = "https://live.douyin.com/"
         self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0"
-        self.headers = {
-            'User-Agent': self.user_agent
-        }
+        self.headers = {'User-Agent': self.user_agent}
+        self.headers_with_cookies: Dict[str, str] = {}
+
         self.douyin_proto = {
-            "bizIm_live": importlib.import_module("protobuf.douyin.bizIm.live"),
-            "webcast_data": importlib.import_module("protobuf.douyin.bizIm.webcast.data"),
-            "webcast_im": importlib.import_module("protobuf.douyin.bizIm.webcast.im"),
-            "transport_im": importlib.import_module("protobuf.douyin.transport.webcast.im"),
+            "bizIm_live": importlib.import_module("protobuf.douyin.bizIm.live_pb2"),
+            "webcast_data": importlib.import_module("protobuf.douyin.bizIm.webcast.data_pb2"),
+            "webcast_im": importlib.import_module("protobuf.douyin.bizIm.webcast.im_pb2"),
+            "transport_im": importlib.import_module("protobuf.douyin.transport.webcast.im_pb2"),
         }
-        self.douyin_pb2 = {
-            "bizIm_live": importlib.import_module("protobuf.douyin_pb2.bizIm.live_pb2"),
-            "webcast_data": importlib.import_module("protobuf.douyin_pb2.bizIm.webcast.data_pb2"),
-            "webcast_im": importlib.import_module("protobuf.douyin_pb2.bizIm.webcast.im_pb2"),
-            "transport_im": importlib.import_module("protobuf.douyin_pb2.transport.webcast.im_pb2"),
-        }
+
+        self.cond_stopped = Condition()
 
         time_readable = time.strftime('%y%m%d_%H%M%S')
         self.json_dump_file = open(f'live.{live_id}.{time_readable}.json', mode='a', encoding='utf8', buffering=1)
@@ -168,6 +173,8 @@ class DouyinLiveWebFetcher:
         self._connectWebSocket()
 
     def stop(self):
+        with self.cond_stopped:
+            self.cond_stopped.notify()
         self.ws.close()
 
     @property
@@ -178,14 +185,11 @@ class DouyinLiveWebFetcher:
         """
         if self.__ttwid:
             return self.__ttwid
-        headers = {
-            "User-Agent": self.user_agent,
-        }
         try:
-            response = self.session.get(self.live_url, headers=headers)
+            response = self.session.get(self.live_url, headers=self.headers)
             response.raise_for_status()
         except Exception as err:
-            print("【X】Request the live url error: ", err)
+            logger.error(f"【X】Request the live url error: {err}")
         else:
             self.__ttwid = response.cookies.get('ttwid')
             return self.__ttwid
@@ -207,11 +211,11 @@ class DouyinLiveWebFetcher:
             response = self.session.get(url, headers=headers)
             response.raise_for_status()
         except Exception as err:
-            print("【X】Request the live room url error: ", err)
+            logger.error(f"【X】Request the live room url error: {err}")
         else:
             match = re.search(r'roomId\\":\\"(\d+)\\"', response.text)
             if match is None or len(match.groups()) < 1:
-                print("【X】No match found for roomId")
+                logger.error("【X】No match found for roomId")
 
             self.__room_id = match.group(1)
 
@@ -221,8 +225,7 @@ class DouyinLiveWebFetcher:
         """
         获取 __ac_nonce
         """
-        resp_cookies = self.session.get(
-            self.host, headers=self.headers).cookies
+        resp_cookies = requests.get(self.host, headers=self.headers).cookies
         return resp_cookies.get("__ac_nonce")
 
     def get_ac_signature(self, __ac_nonce: str = None) -> str:
@@ -249,34 +252,35 @@ class DouyinLiveWebFetcher:
         room_status: 2 直播已结束
         room_status: 0 直播进行中
         """
-        msToken = generateMsToken()
-        nonce = self.get_ac_nonce()
-        signature = self.get_ac_signature(nonce)
-        url = ('https://live.douyin.com/webcast/room/web/enter/?aid=6383'
-               '&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=page_refresh'
-               '&cookie_enabled=true&screen_width=5120&screen_height=1440&browser_language=zh-CN&browser_platform=Win32'
-               '&browser_name=Edge&browser_version=140.0.0.0'
-               f'&web_rid={self.live_id}'
-               f'&room_id_str={self.room_id}'
-               '&enter_source=&is_need_double_stream=false&insert_task_id=&live_reason=&msToken=' + msToken)
-        query = parse_url(url).query
-        params = {i[0]: i[1] for i in [j.split('=') for j in query.split('&')]}
-        a_bogus = self.get_a_bogus(params)  # 计算a_bogus,成功率不是100%，出现失败时重试即可
-        url += f"&a_bogus={a_bogus}"
-        headers = self.headers.copy()
-        headers.update({
-            'Referer': f'https://live.douyin.com/{self.live_id}',
-            'Cookie': f'ttwid={self.ttwid};__ac_nonce={nonce}; __ac_signature={signature}',
-        })
-        resp = self.session.get(url, headers=headers)
-        data = resp.json().get('data')
-        if data:
-            room_status = data.get('room_status')
-            user = data.get('user')
-            user_id = user.get('id_str')
-            nickname = user.get('nickname')
-            print(
-                f"【{nickname}】[{user_id}]直播间：{['正在直播', '已结束'][bool(room_status)]}.")
+        try:
+            nonce = self.get_ac_nonce()
+            for _ in range(5):
+                msToken = generateMsToken()
+                signature = self.get_ac_signature(nonce)
+                url = (
+                    'https://live.douyin.com/webcast/room/web/enter/?aid=6383'
+                    '&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=page_refresh'
+                    '&cookie_enabled=true&screen_width=5120&screen_height=1440&browser_language=zh-CN&browser_platform=Win32'
+                    '&browser_name=Edge&browser_version=140.0.0.0'
+                    f'&web_rid={self.live_id}'
+                    f'&room_id_str={self.room_id}'
+                    '&enter_source=&is_need_double_stream=false&insert_task_id=&live_reason=&msToken=' + msToken)
+                query = parse_url(url).query
+                params = {i[0]: i[1] for i in [j.split('=') for j in query.split('&')]}
+                a_bogus = self.get_a_bogus(params)  # 计算a_bogus,成功率不是100%，出现失败时重试即可
+                url += f"&a_bogus={a_bogus}"
+                headers = self.headers.copy()
+                headers.update({
+                    'Referer': f'https://live.douyin.com/{self.live_id}',
+                    'Cookie': f'ttwid={self.ttwid};__ac_nonce={nonce}; __ac_signature={signature}',
+                })
+                resp = self.session.get(url, headers=headers, allow_redirects=3)
+                if resp.status_code == 200 and len(resp.content) > 0:
+                    break
+            data = resp.json().get('data', None)
+            return data['room_status']
+        except BaseException:
+            logger.error(traceback.format_exc())
 
     def read_cookies_file(self):
         """
@@ -284,7 +288,7 @@ class DouyinLiveWebFetcher:
         """
         path = Path("./cookies.txt")
         if path.is_file():
-            print(f"读取 cookies 文件 './cookies.txt'")
+            logger.debug(f"读取 cookies 文件 './cookies.txt'")
             return path.read_text(encoding="utf-8")
         return None
 
@@ -329,7 +333,7 @@ class DouyinLiveWebFetcher:
         try:
             self.ws.run_forever()
         except Exception:
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
             self.stop()
             raise
 
@@ -338,21 +342,23 @@ class DouyinLiveWebFetcher:
         发送心跳包
         """
         while True:
+            with self.cond_stopped:
+                if self.cond_stopped.wait(timeout=60):
+                    break
             try:
                 heartbeat = transport_im.PushFrame(payload_type='hb').SerializeToString()
                 self.ws.send(heartbeat, websocket.ABNF.OPCODE_PING)
-                print("【√】发送心跳包")
+                logger.debug("【√】发送心跳包")
             except Exception as e:
-                print("【X】心跳包检测错误: ", e)
+                logger.error("【X】心跳包检测错误: ", e)
                 break
-            else:
-                time.sleep(5)
+        logger.info("结束心跳线程")
 
     def _wsOnOpen(self, ws):
         """
         连接建立成功
         """
-        print("【√】WebSocket连接成功.")
+        logger.info("【√】WebSocket连接成功.")
         threading.Thread(target=self._sendHeartbeat).start()
 
     def _wsOnMessage(self, ws, message):
@@ -374,7 +380,7 @@ class DouyinLiveWebFetcher:
             'WebcastRoomStatsMessage': self._parseRoomStatsMsg,  # 直播间统计信息
             'WebcastRoomMessage': self._parseRoomMsg,  # 直播间信息
             'WebcastRoomRankMessage': self._parseRankMsg,  # 直播间排行榜信息
-            'WebcastRoomStreamAdaptationMessage': self._parseRoomStreamAdaptationMsg,  # 直播间流配置
+            # 'WebcastRoomStreamAdaptationMessage': self._parseRoomStreamAdaptationMsg,  # 直播间流配置
             'WebcastLuckyBoxMessage': self._parseLuckyBoxMessage,  # 红包
             'WebcastPreviewCjRpMessage': self._parsePreviewCjRpMessage,  # 红包
             'WebcastLuckyBoxRewardMessage': self._parseLuckyBoxRewardMessage,  # 抽奖结果
@@ -395,21 +401,23 @@ class DouyinLiveWebFetcher:
 
         # 根据proto结构体解析对象
         try:
-            package = transport_im.PushFrame().parse(message)
+            package = transport_im.PushFrame()
+            package.ParseFromString(message)
             headers = {h.key: h.value for h in package.headers}
             payload = package.payload
             if 'gzip' == headers.get('compress_type', 'gzip'):
                 payload = gzip.decompress(payload)
-            response = transport_im.Response().parse(payload)
+            response = transport_im.Response()
+            response.ParseFromString(payload)
         except Exception as e:
-            print(traceback.format_exc())
-            print("While parsing message:")
+            logger.error(traceback.format_exc())
+            logger.error("While parsing message:")
             print(self._tryDumpJson('PushFrame', message), file=self.cascade_json_dump_file)
             return
 
         # 返回直播间服务器链接存活确认消息，便于持续获取数据
         if response.need_ack:
-            ack = transport_im.PushFrame(log_id=package.log_id,
+            ack = transport_im.PushFrame(LogID=package.LogID,
                                          payload_type='ack',
                                          payload=response.internal_ext.encode('utf-8')
                                          ).SerializeToString()
@@ -432,22 +440,21 @@ class DouyinLiveWebFetcher:
                 else:
                     print(json_)
             except Exception as e:
-                print(traceback.format_exc())
+                logger.error(traceback.format_exc())
 
-    def _wsOnError(self, ws, error):
-        print("WebSocket error: ", error)
+    def _wsOnError(self, ws: websocket.WebSocket, error):
+        if isinstance(error, KeyboardInterrupt):
+            return
+        logger.error(f"WebSocket error: {type(error)}: {error}")
+        logger.error(traceback.format_exc())
+        self.stop()
 
     def _wsOnClose(self, ws, *args):
-        self.get_room_status()
-        print("WebSocket connection closed.")
+        self.stop()
+        logger.info("WebSocket connection closed.")
 
-    def _MessageToJson(self, m: transport_im.Message):
-        if isinstance(m, betterproto.Message):
-            return json.dumps(m.to_dict(casing=betterproto.Casing.SNAKE), ensure_ascii=False)
-        elif isinstance(m, gp_message.Message):
-            return json.dumps(gp_json_format.MessageToDict(m, preserving_proto_field_name=True), ensure_ascii=False)
-        else:
-            raise TypeError(f"Unknown class {type(m)}: {repr(m)}")
+    def _MessageToJson(self, m: gp_message.Message):
+        return gp_json_format.MessageToJson(m, preserving_proto_field_name=True, ensure_ascii=False, indent=None)
 
     def _tryGetMethodClass(self, module, method: str):
         known_relation = {
@@ -469,8 +476,6 @@ class DouyinLiveWebFetcher:
         }
         if hasattr(module, method):
             pass
-        elif hasattr(module, betterproto.casing.pascal_case(method)):
-            method = betterproto.casing.pascal_case(method)
         elif method in known_relation and hasattr(module, known_relation[method]):
             method = known_relation[method]
         else:
@@ -482,16 +487,8 @@ class DouyinLiveWebFetcher:
             method = method[7:]
 
         tb_list = []
-        for module in self.douyin_proto.values():
-            class_ = self._tryGetMethodClass(module, method)
-            if class_:
-                try:
-                    m = class_().parse(payload)
-                    return self._MessageToJson(m)
-                except BaseException:
-                    tb_list.append(traceback.format_exc())
 
-        for module in self.douyin_pb2.values():
+        for module in self.douyin_proto.values():
             class_ = self._tryGetMethodClass(module, method)
             if class_:
                 try:
@@ -507,78 +504,74 @@ class DouyinLiveWebFetcher:
                 '------------\n'.join(tb_list)
         raise Exception(f"Unknown method '{method}'.{tb_hint}")
 
+    def _parseFromString(self, class_: str, data: bytes, module=webcast_im) -> gp_message.Message:
+        m = getattr(module, class_)()
+        m.ParseFromString(data)
+        return m
+
     def _parseChatMsg(self, payload):
         """聊天消息"""
-        message = webcast_im.ChatMessage().parse(payload)
-        user_name = message.user.nickname
-        user_id = message.user.id
-        content = message.content
-        print(f"【聊天】[{user_id}]{user_name}: {content}")
+        m = self._parseFromString('ChatMessage', payload)
+        print(f"【聊天】[{m.user.id}]{m.user.nickname}: {m.content}")
 
     def _parseGiftMsg(self, payload):
         """礼物消息"""
-        message = webcast_im.GiftMessage().parse(payload)
-        user_name = message.user.nickname
-        gift_name = message.gift.name
-        gift_cnt = message.combo_count
-        print(f"【礼物】{user_name} 送出了 {gift_name}x{gift_cnt}")
+        m = self._parseFromString('GiftMessage', payload)
+        print(f"【礼物】{m.user.nickname} 送出了 {m.gift.name}x{m.combo_count}")
 
     def _parseLikeMsg(self, payload):
         '''点赞消息'''
-        message = webcast_im.LikeMessage().parse(payload)
-        user_name = message.user.nickname
-        count = message.count
-        print(f"【点赞】{user_name} 点了{count}个赞")
+        m = self._parseFromString('LikeMessage', payload)
+        print(f"【点赞】{m.user.nickname} 点了{m.count}个赞")
 
     def _parseMemberMsg(self, payload):
         '''进入直播间消息'''
-        m = webcast_im.MemberMessage().parse(payload)
-        u: webcast_data.User = m.user
+        m = self._parseFromString('MemberMessage', payload)
+        u = m.user
         gender = ['X', '男', '女'][u.gender]
         print(
             f"【进场】[{u.id}][{gender}]{u.nickname} 进入了直播间。"
-            f"消费 {u.pay_grade.level}，灯牌 {u.fans_club.data.level}，关注 {u.follow_info.following_count}，粉丝 {u.follow_info.follower_count}")
+            f"消费 {u.pay_grade.level}，灯牌 {u.fans_club.data.level}，"
+            f"关注 {u.follow_info.following_count}，粉丝 {u.follow_info.follower_count}")
 
     def _parseSocialMsg(self, payload):
         '''社交消息'''
-        m: webcast_im.SocialMessage = webcast_im.SocialMessage().parse(payload)
+        m = self._parseFromString('SocialMessage', payload)
         follow_count_hint = f'。主播当前粉丝 {m.follow_count}' if m.action == 1 else ''
         print(f"【社交】{render_text(m.common.display_text)}{follow_count_hint}")
 
     def _parseRoomUserSeqMsg(self, payload):
         '''直播间统计'''
-        m = webcast_im.RoomUserSeqMessage().parse(payload)
+        m = self._parseFromString('RoomUserSeqMessage', payload)
         print(
             f"【统计】在线：{m.total_str}({m.total})，场观：{m.total_pv_for_anchor}({m.total_user})")
 
     def _parseFansclubMsg(self, payload):
         '''粉丝团消息'''
-        message = webcast_im.FansclubMessage().parse(payload)
-        print(f"【粉丝团】{self._MessageToJson(message)}")
+        m = self._parseFromString('FansclubMessage', payload)
+        print(f"【粉丝团】{self._MessageToJson(m)}")
 
     def _parseEmojiChatMsg(self, payload):
         '''聊天表情包消息'''
-        m = webcast_im.EmojiChatMessage().parse(payload)
+        m = self._parseFromString('EmojiChatMessage', payload)
         print(f"【聊天表情包】 {m.user.nickname}: {render_text(m.emoji_content)}")
 
     def _parseRoomMsg(self, payload):
-        message = webcast_im.RoomMessage().parse(payload)
-        common = message.common
-        room_id = common.room_id
-        print(f"【直播间】直播间id:{room_id}")
+        m = self._parseFromString('RoomMessage', payload)
+        print(f"【直播间】直播间id:{m.common.room_id}")
 
     def _parseRoomStatsMsg(self, payload):
-        m = webcast_im.RoomStatsMessage().parse(payload)
+        m = self._parseFromString('RoomStatsMessage', payload)
         print(f"【直播间统计】在线观众 {m.display_middle}({m.total})")
 
     def _parseRankMsg(self, payload):
-        m = webcast_im.RoomRankMessage().parse(payload)
+        m = self._parseFromString('RoomRankMessage', payload)
         user_names = [r.user.nickname for r in m.audience_ranks]
         print(f"【直播间排行榜】{' │ ' .join(user_names)}")
 
     def _parseControlMsg(self, payload):
         '''直播间状态消息'''
-        m = webcast_im.ControlMessage().parse(payload)
+        m = self._parseFromString('ControlMessage', payload)
         if m.action in [3, 4, 6]:
             print('直播已结束' if not m.tips else m.tips)
             self.stop()
@@ -586,16 +579,15 @@ class DouyinLiveWebFetcher:
             print(self._MessageToJson(m))
 
     def _parseRoomStreamAdaptationMsg(self, payload):
-        message = webcast_im.RoomStreamAdaptationMessage().parse(payload)
-        adaptationType = message.adaptation_type
-        print(f'直播间adaptation: {adaptationType}')
+        m = self._parseFromString('RoomStreamAdaptationMessage', payload)
+        print(f'直播间adaptation: {m.adaptation_type}')
 
     def _parseLuckyBoxMessage(self, payload):
-        m = webcast_im.LuckyBoxMessage().parse(payload)
+        m = self._parseFromString('LuckyBoxMessage', payload)
         print(f"【红包】{m.user.nickname} 送出红包，价值 {m.diamond_count}，标题：{m.title}")
 
     def _parsePreviewCjRpMessage(self, payload):
-        m = webcast_im.PreviewCjRpMessage().parse(payload)
+        m = self._parseFromString('PreviewCjRpMessage', payload)
         cjrp = m.cjrp
         num = f'{cjrp.left_num}/{cjrp.total_num}'
         amount = f'{cjrp.left_amount}/{cjrp.total_amount}'
@@ -604,12 +596,12 @@ class DouyinLiveWebFetcher:
         print(f"【红包】{cjrp.text} 剩余 {num}个，价值 {amount}({currency})，{timing}")
 
     def _parseLuckyBoxRewardMessage(self, payload):
-        m = webcast_im.LuckyBoxRewardMessage().parse(payload)
+        m = self._parseFromString('LuckyBoxRewardMessage', payload)
         l: List[str] = m.rewarded_user_id
         print(f"【红包中奖结果】{len(l)}人中奖。中奖用户ID：{' │ '.join([str(i) for i in l])}")
 
     def _parseLotteryDrawResultEventMessage(self, payload):
-        m = webcast_im.LotteryDrawResultEventMessage().parse(payload)
+        m = self._parseFromString('LotteryDrawResultEventMessage', payload)
         candidate_hint = ''
         try:
             candidate_num = json.loads(m.extra)['candidate_num']
@@ -619,59 +611,57 @@ class DouyinLiveWebFetcher:
         print(f"【福袋抽奖结果】{len(m.user_ids)}人中奖{candidate_hint}。中奖用户ID：{' │ '.join([str(i) for i in m.user_ids])}")
 
     def _parseLinkMessage(self, payload):
-        m = webcast_im.LinkMessage().parse(payload)
-        oneof, content = betterproto.which_one_of(m, 'content')
+        m = self._parseFromString('LinkMessage', payload)
+        oneof = m.WhichOneof('content')
         if not oneof:
             print(f"Unrecognized LinkMessage: content oneof={oneof}, dump: {self._MessageToJson(m)}")
             return
+        content = getattr(m, oneof)
         if oneof == 'linked_list_change_content':
-            linked_list_change_content: webcast_im.LinkerLinkedListChangeContent = content
             users = []
-            for e in linked_list_change_content.linked_users:
+            for e in content.linked_users:
                 users.append(f'{e.user.nickname}({e.user.id})')
                 if e.content.linkmic_content.host_name:
                     users[-1] += ' ' + e.content.linkmic_content.host_name
             print(f"【连线 变化】{len(users)}位连线主播：{' │ ' .join(users)}")
         elif oneof == 'enter_content':
-            linker_content_map: Dict[int, 'webcast_data.RoomLinkerContent'] = content.linker_content_map
+            linker_content_map: Dict = content.linker_content_map
             users = [
                 f'{e.linked_users[0].user.nickname}({e.linked_users[0].user.id})' for e in linker_content_map.values()
             ]
             print(f"【连线 入场】{len(users)}位入场主播：{' │ ' .join(users)}")
         elif oneof == 'leave_content':
-            leave_content: webcast_im.LinkerLeaveContent = content
             users = [
-                f'{e.user.nickname}({e.user.id})' for e in leave_content.linked_users
+                f'{e.user.nickname}({e.user.id})' for e in content.linked_users
             ]
             print(f"【连线 离场】{len(users)}位离场主播：{' │ ' .join(users)}")
         elif oneof == 'audience_waiting_list_change':
-            waiting_list: webcast_im.LinkerAudienceWaitingListChangeContent = content
-            print(f"【连线 等待连线】{waiting_list.total_waiting_cnt}位等待用户")
+            print(f"【连线 等待连线】{content.total_waiting_cnt}位等待用户")
         else:
             print(f"【连线 {oneof}】content: {self._MessageToJson(content)}")
 
     def _parseScreenChatMessage(self, payload):
-        m = webcast_im.ScreenChatMessage().parse(payload)
+        m = self._parseFromString('ScreenChatMessage', payload)
         print(f"【飘屏 {m.screen_chat_type}】{m.user.nickname}：{m.content}")
 
     def _parsePrivilegeScreenChatMessage(self, payload):
-        m = webcast_im.PrivilegeScreenChatMessage().parse(payload)
+        m = self._parseFromString('PrivilegeScreenChatMessage', payload)
         print(f"【飘屏 样式等级{m.style}】{m.user.nickname}：{m.content}")
 
     def _parseAudioChatMessage(self, payload):
-        m = webcast_im.AudioChatMessage().parse(payload)
+        m = self._parseFromString('AudioChatMessage', payload)
         print(
             f"【语音 {math.ceil(m.audio_duration/1000)}s】{m.user.nickname}：{m.content} ({m.audio_url})")
 
     def _parseCommonToastMessage(self, payload):
-        m = webcast_im.CommonToastMessage().parse(payload)
+        m = self._parseFromString('CommonToastMessage', payload)
         print(f"【弹出提示】{render_text(m.common.display_text)}")
 
     def _parseRoomDataSyncMessage(self, payload):
-        m = webcast_im.RoomDataSyncMessage().parse(payload)
+        m = self._parseFromString('RoomDataSyncMessage', payload)
         handled = False
-        if m.sync_key == 'RoomLinkMicSyncData':
-            linkmic: webcast_im.RoomLinkMicSyncData = webcast_im.RoomLinkMicSyncData().parse(m.payload)
+        if m.syncKey == 'RoomLinkMicSyncData':
+            linkmic = self._parseFromString(m.syncKey, m.payload)
             link_type_map = {1: '视频连线', 2: '语音连线'}
             users = []
             for e in linkmic.linked_users:
@@ -679,62 +669,62 @@ class DouyinLiveWebFetcher:
                 if e.link_type in link_type_map:
                     users[-1] += ' ' + link_type_map[e.link_type]
             print(f"【连线状态同步】{len(users)}位连线用户：{' │ ' .join(users)}")
-            print(f'  {m.sync_key}={self._MessageToJson(linkmic)}', file=self.cascade_json_dump_file)
+            print(f'  {m.syncKey}={self._MessageToJson(linkmic)}', file=self.cascade_json_dump_file)
             handled = True
-        elif m.sync_key == 'LotteryInfoSyncData':
-            lottery: webcast_im.LotteryInfoSyncData = webcast_im.LotteryInfoSyncData().parse(m.payload)
+        elif m.syncKey == 'LotteryInfoSyncData':
+            lottery = self._parseFromString(m.syncKey, m.payload)
             timing = f'时间 {timestamp_to_readable_str(lottery.start_time)} ~ {timestamp_to_readable_str(lottery.draw_time)}'
             if lottery.lottery_type == 1:
                 print(f"【福袋】{lottery.lucky_count}个，{lottery.prize_count}钻，{lottery.candidate_total_count}人参与，{timing}")
-                print(f'  {m.sync_key}={self._MessageToJson(lottery)}', file=self.cascade_json_dump_file)
+                print(f'  {m.syncKey}={self._MessageToJson(lottery)}', file=self.cascade_json_dump_file)
                 handled = True
-        elif m.sync_key == 'HighlightContainerSyncData':
-            highlight_container: webcast_im.HighlightContainerSyncData = webcast_im.HighlightContainerSyncData().parse(m.payload)
-            print(f'  {m.sync_key}={self._MessageToJson(highlight_container)}', file=self.json_dump_file)
+        elif m.syncKey == 'HighlightContainerSyncData':
+            highlight_container = self._parseFromString(m.syncKey, m.payload)
+            print(f'  {m.syncKey}={self._MessageToJson(highlight_container)}', file=self.json_dump_file)
             all_parsed = True
             for item in highlight_container.highlight_items:
                 if item.data_type == 4:
-                    comment_data: webcast_im.HighlightDataComment = item.comment_data
+                    comment_data = item.comment_data
                     print(f'【置顶评论】{comment_data.nick_name}：{comment_data.content}')
                 else:
                     all_parsed = False
             handled = all_parsed
-        elif m.sync_key == 'DoubleLikeSyncData':
-            data: webcast_im.DoubleLikeSyncData = webcast_im.DoubleLikeSyncData().parse(m.payload)
-            print(f'  {m.sync_key}={self._MessageToJson(data)}', file=self.json_dump_file)
+        elif m.syncKey == 'DoubleLikeSyncData':
+            data = self._parseFromString(m.syncKey, m.payload)
+            print(f'  {m.syncKey}={self._MessageToJson(data)}', file=self.json_dump_file)
             print(f"【双倍点赞】{render_text(data.normal_display_text)}")
             handled = True
 
         if not handled:
             print(f'【RoomDataSyncMessage】', end='')
-            print(f'  {m.sync_key}={self._tryDumpJson(m.sync_key, m.payload)}', file=self.cascade_json_dump_file)
+            print(f'  {m.syncKey}={self._tryDumpJson(m.syncKey, m.payload)}', file=self.cascade_json_dump_file)
 
     def _parseRoomCommentTopicMessage(self, payload):
-        m = webcast_im.RoomCommentTopicMessage().parse(payload)
-        l: List["webcast_im.RoomCommentTopicMessageChatItem"] = m.comment_topic_chat_list
+        m = self._parseFromString('RoomCommentTopicMessage', payload)
+        l = m.comment_topic_chat_list
         s = ' │ '.join([f"{e.guide_text}：{e.featured_chat}" for e in l])
         print(f'【话题】{s}')
 
     def _parseHotChatMessage(self, payload):
-        m = webcast_im.HotChatMessage().parse(payload)
+        m = self._parseFromString('HotChatMessage', payload)
         text = f'{m.title}："{m.content}" ×{m.num[-1]}'
         print(f'【热聊话题】{text}')
 
     def _parseAnchorLinkmicSilenceMessage(self, payload):
-        m = webcast_im.AnchorLinkmicSilenceMessage().parse(payload)
+        m = self._parseFromString('AnchorLinkmicSilenceMessage', payload)
         silence_action_map = {1: '静音', 2: '取消静音'}
         print(f'【静音】{m.from_user_id} 将 {m.to_user_id} {silence_action_map[m.silence_action]} 了')
 
     def _parseNotifyMessage(self, payload):
-        m = webcast_im.NotifyMessage().parse(payload)
+        m = self._parseFromString('NotifyMessage', payload)
         print('【直播间公告】' + render_text(m.common.display_text))
 
     def _parseRoomMessage(self, payload):
-        m = webcast_im.RoomMessage().parse(payload)
+        m = self._parseFromString('RoomMessage', payload)
         print('【直播间消息】' + render_text(m.common.display_text))
 
     def _parseInRoomBannerMessage(self, payload):
-        m = webcast_im.InRoomBannerMessage().parse(payload)
+        m = self._parseFromString('InRoomBannerMessage', payload)
         extra = json.loads(m.extra)
         handled = False
         unique_key = extra.get('unique_key', '')
