@@ -201,10 +201,6 @@ class DouyinLiveWebFetcher:
         self._connectWebSocket()
 
     def stop(self):
-        with self.cond_stopped:
-            self.stopped = True
-            self.cond_stopped.notify()
-        self.ws.close()
 
         def compress_log_files(*files: List[str]):
             for f in files:
@@ -212,11 +208,19 @@ class DouyinLiveWebFetcher:
                 compress_file(f, f + '.zstd', level=11)
                 logger.debug(f"文件压缩完成 '{f}.zstd'")
 
-        threading.Thread(target=compress_log_files, args=(self.msg_log_file_name, self.json_log_file_name)).start()
-        self.msg_log_file_name, self.json_log_file_name = None, None
-        self.json_log_file.close()
-        self.msg_log_file.close()
-        self.cascade_log_file = None
+        with self.cond_stopped:
+            if self.stopped:
+                return
+            self.stopped = True
+            self.ws.close()
+
+            threading.Thread(target=compress_log_files, args=(self.msg_log_file_name, self.json_log_file_name)).start()
+            self.msg_log_file_name, self.json_log_file_name = None, None
+            self.json_log_file.close()
+            self.msg_log_file.close()
+            self.cascade_log_file = None
+
+            self.cond_stopped.notify()
 
     def run_forever(self, poll_interval=5):
         while True:
@@ -310,7 +314,7 @@ class DouyinLiveWebFetcher:
         logger.debug('正在获取直播间开播状态')
         try:
             nonce = self.get_ac_nonce()
-            for _ in range(10):
+            for _ in range(30):
                 msToken = generateMsToken()
                 signature = self.get_ac_signature(nonce)
                 url = (
