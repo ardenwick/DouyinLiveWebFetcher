@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from multiprocessing import Condition, Lock
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Callable, List, Tuple
 from unittest.mock import patch
 from urllib3.util.url import parse_url
 import codecs
@@ -463,64 +463,63 @@ class DouyinLiveWebFetcher:
         :param ws: websocket实例
         :param message: 数据
         """
-        method_bindings = {
-            'WebcastChatMessage': self._parseChatMsg,  # 聊天消息
-            'WebcastGiftMessage': self._parseGiftMsg,  # 礼物消息
-            'WebcastBindingGiftMessage': self._parseBindingGiftMessage,  # 礼物消息
-            'WebcastLikeMessage': self._muteMsg,  # 点赞消息 _parseLikeMsg
-            'WebcastMemberMessage': self._parseMemberMsg,  # 进入直播间消息
-            'WebcastSocialMessage': self._parseSocialMsg,  # 关注消息
-            'WebcastRoomUserSeqMessage': self._parseRoomUserSeqMsg,  # 直播间统计
-            'WebcastFansclubMessage': self._parseFansclubMsg,  # 粉丝团消息
-            'WebcastControlMessage': self._parseControlMsg,  # 直播间状态消息
-            'WebcastEmojiChatMessage': self._parseEmojiChatMsg,  # 聊天表情包消息
-            'WebcastExhibitionChatMessage': self._parseExhibitionChatMessage,  # 冠名展馆
-            'WebcastRoomStatsMessage': self._parseRoomStatsMsg,  # 直播间统计信息
-            'WebcastRoomMessage': self._parseRoomMsg,  # 直播间信息
-            'WebcastRoomRankMessage': self._parseRankMsg,  # 直播间排行榜信息
-            'WebcastRoomStreamAdaptationMessage': self._muteMsg,  # 直播间流配置 _parseRoomStreamAdaptationMsg
-            'WebcastLuckyBoxMessage': self._parseLuckyBoxMessage,  # 红包
-            'WebcastPreviewCjRpMessage': self._parsePreviewCjRpMessage,  # 红包
-            'WebcastLuckyBoxRewardMessage': self._parseLuckyBoxRewardMessage,  # 抽奖结果
-            'WebcastLotteryDrawResultEventMessage': self._parseLotteryDrawResultEventMessage,  # 抽奖结果
-            'WebcastLinkMessage': self._parseLinkMessage,  # 连线信息
-            'WebcastScreenChatMessage': self._parseScreenChatMessage,  # 飘屏消息
-            'WebcastPrivilegeScreenChatMessage': self._parsePrivilegeScreenChatMessage,  # 高级飘屏
-            'WebcastAudioChatMessage': self._parseAudioChatMessage,  # 语音消息
-            'WebcastToastMessage': self._parseToastMessage,
-            'WebcastCommonToastMessage': self._parseCommonToastMessage,  # 弹出提示，比如全员放大提示
-            'WebcastRoomDataSyncMessage': self._parseRoomDataSyncMessage,  # 观众连线、福袋、红包、置顶评论、双倍点赞
-            'WebcastRoomCommentTopicMessage': self._parseRoomCommentTopicMessage,  # 话题
-            'WebcastHotChatMessage': self._parseHotChatMessage,  # 热聊话题
-            'WebcastAnchorLinkmicSilenceMessage': self._parseAnchorLinkmicSilenceMessage,  # 连线静音
-            'WebcastRoomNotifyMessage': self._parseNotifyMessage,  # 直播间公告
-            'WebcastRoomMessage': self._parseRoomMessage,  # 直播间消息
-            'WebcastNotifyEffectMessage': self._parseNotifyEffectMessage,  # 特效公告
-            'WebcastInRoomBannerMessage': self._parseInRoomBannerMessage,  # 播间横幅内容，比较杂，含挑战榜、百强榜、观众充能、升级派对、礼物心愿单
-            'WebcastLightGiftMessage': self._muteMsg,  # 多人连线时给某个主播礼物的消息
-            'WebcastGiftSortMessage': self._muteMsg,  # UI礼物布局，无可用信息
-            'WebcastChatLikeMessage': self._muteMsg,  # 未知
-            'WebcastLuckyBoxTempStatusMessage': self._muteMsg,  # 无可用信息
-            'WebcastBattleStatusMessage': self._parseBattleStatusMessage,  # PK 开始、惩罚、结束
-            'WebcastLinkerContributeMessage': self._muteMsg,  # 未知
-            'WebcastProfitInteractionScoreMessage': self._muteMsg,  # 收益性互动分数？
-            'WebcastRanklistHourEntranceMessage': self._muteMsg,  # 小时榜、百强榜。人气榜呢？
-            'WebcastBattleTeamTaskMessage': self._muteMsg,  # PK分数加成消息
-            'LinkMicMethod': self._parseLinkMicMethod,  # 连麦分数及PK排名
-            'WebcastLinkMicMethod': self._parseLinkMicMethod,
-            'WebcastLinkMicArmiesMethod': self._parseLinkMicArmiesMethod,  # PK 战队，即榜前三
-            'WebcastEasterEggDataMessage': self._muteMsg,  # 未知
-            'WebcastDecorationModifyMethod': self._muteMsg,  # 未知
-            'WebcastDecorationUpdateMessage': self._muteMsg,  # 未知
-            'WebcastTaskCenterEntranceMessage': self._parseTaskCenterEntranceMessage,  # 未知
-            'WebcastRoomIndicatorMessage': self._parseRoomIndicatorMessage,  # 加热中
-            'WebcastLinkSettingNotifyMessage': self._muteMsg,  # 暂无可用信息
-            'WebcastBattleEffectContainerMessage': self._muteMsg,  # PK 暴击等
-            'WebcastBattleUpdatePropCardTaskMessage': self._muteMsg,  # PK 定身卡等
-            'WebcastBattleAuxiliaryMessage': self._parseBattleAuxiliaryMessage,  # PK 玩法
-            'WebcastLinkMicBattleMethod': self._parseLinkMicBattleMethod,  # PK
-            'WebcastLinkMicBattleFinishMethod': self._parseLinkMicBattleFinishMethod,  # PK 结束
-            'WebcastProfileViewMessage': self._parseProfileViewMessage,  # 亲密度
+        method_bindings: dict[str, Callable[[Message], None]] = {
+            'ChatMessage': self.on_ChatMessage,  # 聊天消息
+            'GiftMessage': self.on_GiftMessage,  # 礼物消息
+            'BindingGiftMessage': self.on_BindingGiftMessage,  # 礼物消息
+            'LikeMessage': self._muteMsg,  # 点赞消息 on_LikeMessage
+            'MemberMessage': self.on_MemberMessage,  # 进入直播间消息
+            'SocialMessage': self.on_SocialMessage,  # 关注消息
+            'RoomUserSeqMessage': self.on_RoomUserSeqMessage,  # 直播间统计
+            'FansclubMessage': self.on_FansclubMessage,  # 粉丝团消息
+            'ControlMessage': self.on_ControlMessage,  # 直播间状态消息
+            'EmojiChatMessage': self.on_EmojiChatMessage,  # 聊天表情包消息
+            'ExhibitionChatMessage': self.on_ExhibitionChatMessage,  # 冠名展馆
+            'RoomStatsMessage': self.on_RoomStatsMessage,  # 直播间统计信息
+            'RoomMessage': self.on_RoomMessage,  # 直播间信息
+            'RoomRankMessage': self.on_RoomRankMessage,  # 直播间排行榜信息
+            'RoomStreamAdaptationMessage': self._muteMsg,  # 直播间流配置 on_RoomStreamAdaptationMessage
+            'LuckyBoxMessage': self.on_LuckyBoxMessage,  # 红包
+            'PreviewCjRpMessage': self.on_PreviewCjRpMessage,  # 红包
+            'LuckyBoxRewardMessage': self.on_LuckyBoxRewardMessage,  # 抽奖结果
+            'LotteryDrawResultEventMessage': self.on_LotteryDrawResultEventMessage,  # 抽奖结果
+            'LinkMessage': self.on_LinkMessage,  # 连线信息
+            'ScreenChatMessage': self.on_ScreenChatMessage,  # 飘屏消息
+            'PrivilegeScreenChatMessage': self.on_PrivilegeScreenChatMessage,  # 高级飘屏
+            'AudioChatMessage': self.on_AudioChatMessage,  # 语音消息
+            'ToastMessage': self.on_ToastMessage,
+            'CommonToastMessage': self.on_CommonToastMessage,  # 弹出提示，比如全员放大提示
+            'RoomDataSyncMessage': self.on_RoomDataSyncMessage,  # 观众连线、福袋、红包、置顶评论、双倍点赞
+            'RoomCommentTopicMessage': self.on_RoomCommentTopicMessage,  # 话题
+            'HotChatMessage': self.on_HotChatMessage,  # 热聊话题
+            'AnchorLinkmicSilenceMessage': self.on_AnchorLinkmicSilenceMessage,  # 连线静音
+            'RoomNotifyMessage': self.on_NotifyMessage,  # 直播间公告
+            'RoomMessage': self.on_RoomMessage,  # 直播间消息
+            'NotifyEffectMessage': self.on_NotifyEffectMessage,  # 特效公告
+            'InRoomBannerMessage': self.on_InRoomBannerMessage,  # 播间横幅内容，比较杂，含挑战榜、百强榜、观众充能、升级派对、礼物心愿单
+            'LightGiftMessage': self._muteMsg,  # 多人连线时给某个主播礼物的消息
+            'GiftSortMessage': self._muteMsg,  # UI礼物布局，无可用信息
+            'ChatLikeMessage': self._muteMsg,  # 未知
+            'LuckyBoxTempStatusMessage': self._muteMsg,  # 无可用信息
+            'BattleStatusMessage': self.on_BattleStatusMessage,  # PK 开始、惩罚、结束
+            'LinkerContributeMessage': self._muteMsg,  # 未知
+            'ProfitInteractionScoreMessage': self._muteMsg,  # 收益性互动分数？
+            'RanklistHourEntranceMessage': self._muteMsg,  # 小时榜、百强榜。人气榜呢？
+            'BattleTeamTaskMessage': self._muteMsg,  # PK分数加成消息
+            'LinkMicMethod': self.on_LinkMicMethod,  # 连麦分数及PK排名
+            'LinkMicArmiesMethod': self.on_LinkMicArmiesMethod,  # PK 战队，即榜前三
+            'EasterEggDataMessage': self._muteMsg,  # 未知
+            'DecorationModifyMethod': self._muteMsg,  # 未知
+            'DecorationUpdateMessage': self._muteMsg,  # 未知
+            'TaskCenterEntranceMessage': self.on_TaskCenterEntranceMessage,  # 未知
+            'RoomIndicatorMessage': self.on_RoomIndicatorMessage,  # 加热中
+            'LinkSettingNotifyMessage': self._muteMsg,  # 暂无可用信息
+            'BattleEffectContainerMessage': self._muteMsg,  # PK 暴击等
+            'BattleUpdatePropCardTaskMessage': self._muteMsg,  # PK 定身卡等
+            'BattleAuxiliaryMessage': self.on_BattleAuxiliaryMessage,  # PK 玩法
+            'LinkMicBattleMethod': self.on_LinkMicBattleMethod,  # PK
+            'LinkMicBattleFinishMethod': self.on_LinkMicBattleFinishMethod,  # PK 结束
+            'ProfileViewMessage': self.on_ProfileViewMessage,  # 亲密度
         }
         muted_messages = [k for k, v in method_bindings.items() if v == self._muteMsg]
 
@@ -556,7 +555,7 @@ class DouyinLiveWebFetcher:
 
         # 根据消息类别解析消息体
         for msg in response.messages:
-            method = msg.method
+            method: str = msg.method.removeprefix('Webcast')
             try:
                 json_ = self._tryDumpJson(method, msg.payload)
             except BaseException:
@@ -565,7 +564,8 @@ class DouyinLiveWebFetcher:
 
             try:
                 if method in method_bindings:
-                    method_bindings[method](msg.payload)
+                    m = self._parseFromString(method, msg.payload)
+                    method_bindings[method](m)
                 else:
                     self.log_msg(json_)
             except Exception as e:
@@ -585,7 +585,7 @@ class DouyinLiveWebFetcher:
     def _MessageToJson(self, m: Message):
         return gp_json_format.MessageToJson(m, preserving_proto_field_name=True, ensure_ascii=False, indent=None)
 
-    def _tryGetMethodClass(self, module, method: str):
+    def _tryGetClass(self, module, method: str):
         known_relation = {
             # 0.0.5
             "LinkMicArmiesMethod": "LinkMicArmies",
@@ -612,13 +612,10 @@ class DouyinLiveWebFetcher:
         return getattr(module, method)
 
     def _tryDumpJson(self, method: str, payload: bytes):
-        if method.startswith('Webcast'):
-            method = method[7:]
-
         tb_list = []
 
         for module in self.douyin_proto.values():
-            class_ = self._tryGetMethodClass(module, method)
+            class_ = self._tryGetClass(module, method)
             if class_:
                 try:
                     m = class_()
@@ -677,7 +674,7 @@ class DouyinLiveWebFetcher:
         logger.debug(f'Added {count_after - count_before} users from {method}. Now {count_after}.')
 
     def _parseFromString(self, class_: str, data: bytes, module=webcast_im) -> Message:
-        m: Message = self._tryGetMethodClass(module, class_)()
+        m: Message = self._tryGetClass(module, class_)()
         if m:
             m.ParseFromString(data)
             self._gatherUsers(m, class_)
@@ -688,33 +685,28 @@ class DouyinLiveWebFetcher:
     def _muteMsg(self, _):
         return None
 
-    def _parseChatMsg(self, payload):
+    def on_ChatMessage(self, m: Message):
         """聊天消息"""
-        m = self._parseFromString('ChatMessage', payload)
         u = m.user
         badge = f"({u.pay_grade.level} {u.fans_club.data.level})"
         # '\u200b' 是无宽度空格，避免用户昵称中的特殊字符导致后续文字显示错乱。
         self.log_msg(f"【聊天】{badge} {m.user.nickname}\u200b：{m.content}")
 
-    def _parseGiftMsg(self, payload):
+    def on_GiftMessage(self, m: Message):
         """礼物消息"""
-        m = self._parseFromString('GiftMessage', payload)
         repeat_end_hint = '（连击结束）' if (m.repeat_end and m.combo_count > 1) else ''
         self.log_msg(f"【礼物】{m.user.nickname}\u200b 送出了 {m.gift.name} ×{m.combo_count}{repeat_end_hint}")
 
-    def _parseBindingGiftMessage(self, payload):
+    def on_BindingGiftMessage(self, m: Message):
         """礼物消息"""
-        m = self._parseFromString('BindingGiftMessage', payload)
         self.log_msg(f"【礼物】{m.common.describe}")
 
-    def _parseLikeMsg(self, payload):
+    def on_LikeMessage(self, m: Message):
         '''点赞消息'''
-        m = self._parseFromString('LikeMessage', payload)
         self.log_msg(f"【点赞】{m.user.nickname}\u200b 点了{m.count}个赞")
 
-    def _parseMemberMsg(self, payload):
+    def on_MemberMessage(self, m: Message):
         '''进入直播间消息'''
-        m = self._parseFromString('MemberMessage', payload)
         u = m.user
         gender = ['X', '男', '女'][u.gender]
         self.log_msg(
@@ -723,49 +715,40 @@ class DouyinLiveWebFetcher:
             f"{u.follow_info.following_count},{u.follow_info.follower_count}"
             f") {u.nickname}\u200b 来了")
 
-    def _parseSocialMsg(self, payload):
+    def on_SocialMessage(self, m: Message):
         '''社交消息'''
-        m = self._parseFromString('SocialMessage', payload)
         follow_count_hint = f'。主播当前粉丝 {m.follow_count}' if m.action == 1 else ''
         self.log_msg(f"【社交】{render_text(m.common.display_text)}{follow_count_hint}")
 
-    def _parseRoomUserSeqMsg(self, payload):
+    def on_RoomUserSeqMessage(self, m: Message):
         '''直播间统计'''
-        m = self._parseFromString('RoomUserSeqMessage', payload)
         self.log_msg(
             f"【统计】在线 {m.total_str}({m.total})，场观 {m.total_pv_for_anchor}({m.total_user})")
 
-    def _parseFansclubMsg(self, payload):
+    def on_FansclubMessage(self, m: Message):
         '''粉丝团消息'''
-        m = self._parseFromString('FansclubMessage', payload)
         if m.content:
             self.log_msg(f"【粉丝团】{m.content}")
 
-    def _parseEmojiChatMsg(self, payload):
+    def on_EmojiChatMessage(self, m: Message):
         '''聊天表情包消息'''
-        m = self._parseFromString('EmojiChatMessage', payload)
         self.log_msg(f"【表情包】 {m.user.nickname}\u200b: {render_text(m.emoji_content)}")
 
-    def _parseExhibitionChatMessage(self, payload):
-        m = self._parseFromString('ExhibitionChatMessage', payload)
+    def on_ExhibitionChatMessage(self, m: Message):
         self.log_msg(f"【展馆】 {render_text(m.display_text)}")
 
-    def _parseRoomMsg(self, payload):
-        m = self._parseFromString('RoomMessage', payload)
+    def on_RoomMessage(self, m: Message):
         self.log_msg(f"【直播间】直播间id:{m.common.room_id}")
 
-    def _parseRoomStatsMsg(self, payload):
-        m = self._parseFromString('RoomStatsMessage', payload)
+    def on_RoomStatsMessage(self, m: Message):
         self.log_msg(f"【直播间统计】在线观众 {m.display_middle}({m.total})")
 
-    def _parseRankMsg(self, payload):
-        m = self._parseFromString('RoomRankMessage', payload)
+    def on_RoomRankMessage(self, m: Message):
         ranks = [f'{r.user.nickname}\u200b({r.score})' for r in m.audience_ranks]
         self.log_msg(f"【直播间排行榜】{' │ ' .join(ranks)}")
 
-    def _parseControlMsg(self, payload):
+    def on_ControlMessage(self, m: Message):
         '''直播间状态消息'''
-        m = self._parseFromString('ControlMessage', payload)
         if m.action == 1:  # 主播暂时离开
             self.log_msg(f'{render_text(m.common.display_text)}')
         elif m.action in [3, 4, 6]:
@@ -776,16 +759,13 @@ class DouyinLiveWebFetcher:
         else:
             self.log_msg(self._MessageToJson(m))
 
-    def _parseRoomStreamAdaptationMsg(self, payload):
-        m = self._parseFromString('RoomStreamAdaptationMessage', payload)
+    def on_RoomStreamAdaptationMessage(self, m: Message):
         self.log_msg(f'直播间adaptation: {m.adaptation_type}')
 
-    def _parseLuckyBoxMessage(self, payload):
-        m = self._parseFromString('LuckyBoxMessage', payload)
+    def on_LuckyBoxMessage(self, m: Message):
         self.log_msg(f"【红包】{m.user.nickname}\u200b 送出红包，价值 {m.diamond_count}，标题：{m.title}")
 
-    def _parsePreviewCjRpMessage(self, payload):
-        m = self._parseFromString('PreviewCjRpMessage', payload)
+    def on_PreviewCjRpMessage(self, m: Message):
         cjrp = m.cjrp
         num = f'{cjrp.left_num}/{cjrp.total_num}'
         amount = f'{cjrp.left_amount}/{cjrp.total_amount}'
@@ -793,13 +773,11 @@ class DouyinLiveWebFetcher:
         timing = f'时间 {format_readable_time(cjrp.send_time)} ~ {format_readable_time(cjrp.expire_time)}'
         self.log_msg(f"【红包】{cjrp.text} 剩余 {num}个，价值 {amount}({currency})，{timing}")
 
-    def _parseLuckyBoxRewardMessage(self, payload):
-        m = self._parseFromString('LuckyBoxRewardMessage', payload)
+    def on_LuckyBoxRewardMessage(self, m: Message):
         l: List[str] = m.rewarded_user_id
         self.log_msg(f"【红包中奖结果】{len(l)}人中奖。中奖用户（或ID）：{' │ '.join([self.nickname_or_id(i) for i in l])}")
 
-    def _parseLotteryDrawResultEventMessage(self, payload):
-        m = self._parseFromString('LotteryDrawResultEventMessage', payload)
+    def on_LotteryDrawResultEventMessage(self, m: Message):
         candidate_hint = ''
         try:
             candidate_num = json.loads(m.extra)['candidate_num']
@@ -809,8 +787,7 @@ class DouyinLiveWebFetcher:
         self.log_msg(
             f"【福袋抽奖结果】{len(m.user_ids)}人中奖{candidate_hint}。中奖用户（或ID）：{' │ '.join([self.nickname_or_id(i) for i in m.user_ids])}")
 
-    def _parseLinkMessage(self, payload):
-        m = self._parseFromString('LinkMessage', payload)
+    def on_LinkMessage(self, m: Message):
         oneof = m.WhichOneof('content')
         if not oneof:
             self.log_msg(f"【连线】  Unrecognized LinkMessage: content oneof={oneof}, dump: {self._MessageToJson(m)}")
@@ -844,29 +821,23 @@ class DouyinLiveWebFetcher:
         else:
             self.log_msg(f"【连线 {oneof}】content: {self._MessageToJson(content)}")
 
-    def _parseScreenChatMessage(self, payload):
-        m = self._parseFromString('ScreenChatMessage', payload)
+    def on_ScreenChatMessage(self, m: Message):
         self.log_msg(f"【飘屏 {m.screen_chat_type}】{m.user.nickname}\u200b：{m.content}")
 
-    def _parsePrivilegeScreenChatMessage(self, payload):
-        m = self._parseFromString('PrivilegeScreenChatMessage', payload)
+    def on_PrivilegeScreenChatMessage(self, m: Message):
         self.log_msg(f"【飘屏 样式等级{m.style}】{m.user.nickname}\u200b：{m.content}")
 
-    def _parseAudioChatMessage(self, payload):
-        m = self._parseFromString('AudioChatMessage', payload)
+    def on_AudioChatMessage(self, m: Message):
         self.log_msg(
             f"【语音 {math.ceil(m.audio_duration/1000)}s】{m.user.nickname}\u200b：{m.content} ({m.audio_url})")
 
-    def _parseToastMessage(self, payload):
-        m = self._parseFromString('ToastMessage', payload)
+    def on_ToastMessage(self, m: Message):
         self.log_msg(f"【弹出提示】{m.content}")
 
-    def _parseCommonToastMessage(self, payload):
-        m = self._parseFromString('CommonToastMessage', payload)
+    def on_CommonToastMessage(self, m: Message):
         self.log_msg(f"【弹出提示】{render_text(m.common.display_text)}")
 
-    def _parseRoomDataSyncMessage(self, payload_):
-        m = self._parseFromString('RoomDataSyncMessage', payload_)
+    def on_RoomDataSyncMessage(self, m: Message):
         payload = self._parseFromString(m.syncKey, m.payload)
         self.log_json(f'  {m.syncKey}={self._MessageToJson(payload)}')
         handled = False
@@ -907,39 +878,32 @@ class DouyinLiveWebFetcher:
         if not handled:
             self.log_msg(f'【RoomDataSyncMessage】  {m.syncKey}={self._tryDumpJson(m.syncKey, m.payload)}')
 
-    def _parseRoomCommentTopicMessage(self, payload):
-        m = self._parseFromString('RoomCommentTopicMessage', payload)
+    def on_RoomCommentTopicMessage(self, m: Message):
         l = m.comment_topic_chat_list
         s = ' │ '.join([f"{e.guide_text}：{e.featured_chat}" for e in l])
         self.log_msg(f'【话题】{s}')
 
-    def _parseHotChatMessage(self, payload):
-        m = self._parseFromString('HotChatMessage', payload)
+    def on_HotChatMessage(self, m: Message):
         text = f'{m.title}："{m.content}" ×{m.num[-1]}'
         self.log_msg(f'【热聊话题】{text}')
 
-    def _parseAnchorLinkmicSilenceMessage(self, payload):
-        m = self._parseFromString('AnchorLinkmicSilenceMessage', payload)
+    def on_AnchorLinkmicSilenceMessage(self, m: Message):
         silence_action = {1: '静音', 2: '取消静音'}.get(m.silence_action)
         self.log_msg(
             f'【静音】{self.nickname_or_id(m.from_user_id)}\u200b 将 {self.nickname_or_id(m.to_user_id)}\u200b {silence_action} 了')
 
-    def _parseNotifyMessage(self, payload):
-        m = self._parseFromString('NotifyMessage', payload)
+    def on_NotifyMessage(self, m: Message):
         self.log_msg('【直播间公告】' + render_text(m.common.display_text))
 
-    def _parseRoomMessage(self, payload):
-        m = self._parseFromString('RoomMessage', payload)
+    def on_RoomMessage(self, m: Message):
         self.log_msg('【直播间消息】' + render_text(m.common.display_text))
 
-    def _parseNotifyEffectMessage(self, payload):
-        m = self._parseFromString('NotifyEffectMessage', payload)
+    def on_NotifyEffectMessage(self, m: Message):
         text = ([item.text_item.text for item in m.text_v2.display_items if item.display_item_type == 2] or [None])[0]
         if text:
             self.log_msg('【特效公告】' + render_text(text))
 
-    def _parseInRoomBannerMessage(self, payload):
-        m = self._parseFromString('InRoomBannerMessage', payload)
+    def on_InRoomBannerMessage(self, m: Message):
         self.log_json(f'  extra={m.extra}')
 
         extra = json.loads(m.extra)
@@ -967,24 +931,21 @@ class DouyinLiveWebFetcher:
                 return
             self.log_msg(f'【InRoomBannerMessage】  {self._MessageToJson(m)}')
 
-    def _parseBattleStatusMessage(self, payload):
-        m = self._parseFromString('BattleStatusMessage', payload)
+    def on_BattleStatusMessage(self, m: Message):
         status = {1: '开始', 2: '惩罚', 3: '结束'}.get(m.status, f'状态 {m.status}')
         duration = (int(m.end_time_ms) - int(m.start_time_ms)) // 1000
         punish_hint = f'，惩罚时长{m.punish_duration}秒' if m.status == 2 else ''
         self.log_msg(
             f'【PK {status}】时间{duration}秒，{format_readable_time(m.start_time_ms[:-3])} ~ {format_readable_time(m.end_time_ms[:-3])}{punish_hint}')
 
-    def _parseLinkMicMethod(self, payload):
-        m = self._parseFromString('LinkMicMethod', payload)
+    def on_LinkMicMethod(self, m: Message):
         # 100 无可用信息
         # 202 PK分数更新
         if m.message_type in (100, 202):
             return
         self.log_msg(self._MessageToJson(m))
 
-    def _parseLinkMicArmiesMethod(self, payload):
-        m = self._parseFromString('LinkMicArmiesMethod', payload)
+    def on_LinkMicArmiesMethod(self, m: Message):
         user_armies_list = []
         for user_id, user_armies in m.user_armies_map.items():
             user_armies_list.append(
@@ -993,8 +954,7 @@ class DouyinLiveWebFetcher:
             )
         self.log_msg('【PK 战队】 ' + ' ┃ '.join(user_armies_list))
 
-    def _parseTaskCenterEntranceMessage(self, payload):
-        m = self._parseFromString('TaskCenterEntranceMessage', payload)
+    def on_TaskCenterEntranceMessage(self, m: Message):
         self.log_json(f'  extra={m.extra}')
 
         extra = json.loads(m.extra)
@@ -1004,22 +964,18 @@ class DouyinLiveWebFetcher:
         self.log_msg(self._MessageToJson(m))
         self.log_msg(f'  extra={m.extra}')
 
-    def _parseRoomIndicatorMessage(self, payload):
-        m = self._parseFromString('RoomIndicatorMessage', payload)
+    def on_RoomIndicatorMessage(self, m: Message):
         if m.biz_type == 9:
             return
         self.log_msg(self._MessageToJson(m))
 
-    def _parseBattleAuxiliaryMessage(self, payload):
-        m = self._parseFromString('BattleAuxiliaryMessage', payload)
+    def on_BattleAuxiliaryMessage(self, m: Message):
         if m.type == 1:
             self.log_msg(f'【PK 玩法】{m.reply_content.reply_string} │ 规则：{m.reply_content.auxiliary_data.rule_content}')
             return
         self.log_msg(self._MessageToJson(m))
 
-    def _parseLinkMicBattleMethod(self, payload):
-        m = self._parseFromString('LinkMicBattleMethod', payload)
-
+    def on_LinkMicBattleMethod(self, m: Message):
         def pk_user(o):
             segs = [o.user_img_flip_info.pk_stage_desc]
             c = o.consecutive_record
@@ -1036,16 +992,13 @@ class DouyinLiveWebFetcher:
             f' 由{self.nickname_or_id(m.battle_settings.initiator_id)}\u200b发起'
         )
 
-    def _parseLinkMicBattleFinishMethod(self, payload):
-        m = self._parseFromString('LinkMicBattleFinishMethod', payload)
-
+    def on_LinkMicBattleFinishMethod(self, m: Message):
         self.log_msg(
             '【PK 结束分数】' +
             ' │ '.join([
                 f'{self.nickname_or_id(o.user_id)}\u200b: {o.score}' for o in m.battle_scores
             ])
         )
-
         if '获得音浪' in m.battle_settings.lynx_data:
             lynx_data = json.loads(m.battle_settings.lynx_data)
             battle_finish_data = lynx_data.get('battle_finish_data', None)
@@ -1058,6 +1011,5 @@ class DouyinLiveWebFetcher:
                 ])
             )
 
-    def _parseProfileViewMessage(self, payload):
-        m = self._parseFromString('ProfileViewMessage', payload)
+    def on_ProfileViewMessage(self, m: Message):
         self.log_msg(f'【亲密度】{render_text(m.title)}{render_text(m.sub_title)}')
