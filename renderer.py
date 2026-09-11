@@ -5,7 +5,7 @@ import re
 
 def format_user(t: data.TextPieceUser) -> str:
     u: data.User = t.user
-    return f'{u.nickname}({u.id})'
+    return f'{u.nickname}\u200b({u.id})'
 
 
 def format_string(t: str) -> str:
