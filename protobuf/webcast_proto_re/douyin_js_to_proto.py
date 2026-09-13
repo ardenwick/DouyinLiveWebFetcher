@@ -24,6 +24,8 @@ import os
 import re
 import sys
 
+from ...utils.io import *
+
 PROJECT_NAME = 'douyin'
 
 SCALAR_TYPES = {
@@ -319,21 +321,6 @@ def generate_proto(root, text, output_dir='../proto') -> List[str]:
         write_file(f, '\n'.join(files[f]))
 
     return list(files.keys())
-
-
-def read_file(file_path: str) -> str:
-    with open(file_path, 'r', encoding="utf8") as f:
-        return f.read()
-
-
-def write_file(file_path: str, text: str, append=False) -> None:
-    with open(file_path, 'a' if append else 'w', encoding='utf8') as f:
-        f.write(text)
-
-
-def write_stderr(text: str):
-    sys.stderr.write(text)
-    sys.stderr.flush()
 
 
 def format_javascript(text: str, indent=4) -> str:
