@@ -321,21 +321,6 @@ def generate_proto(root, text, output_dir='../proto') -> List[str]:
     return list(files.keys())
 
 
-def read_file(file_path: str) -> str:
-    with open(file_path, 'r', encoding="utf8") as f:
-        return f.read()
-
-
-def write_file(file_path: str, text: str, append=False) -> None:
-    with open(file_path, 'a' if append else 'w', encoding='utf8') as f:
-        f.write(text)
-
-
-def write_stderr(text: str):
-    sys.stderr.write(text)
-    sys.stderr.flush()
-
-
 def format_javascript(text: str, indent=4) -> str:
     start_time = time()
     if len(text) > 1024 * 1024:
@@ -413,7 +398,7 @@ def extract_proto_related_js_snippet(text: str) -> Tuple[str, str]:
     for i, line in enumerate(lines):
         # top level namespace name
         if len(line) - len(line.lstrip()) == 12:
-            m = re.search('( \w\.\w+) = ', line)
+            m = re.search(r'( \w\.\w+) = ', line)
             if m:
                 result.append(m.group(1))
         # message name, field definition
@@ -430,9 +415,9 @@ def extract_proto_related_js_snippet(text: str) -> Tuple[str, str]:
                 for j, l in enumerate(snippet_lines):
                     if ' switch ' in l and ' case 1:' in snippet_lines[j + 1]:
                         key_type = re.search(
-                            '[\w\.]+', snippet_lines[j + 2].split()[2]).group(0)
+                            r'[\w\.]+', snippet_lines[j + 2].split()[2]).group(0)
                         value_type = re.search(
-                            '[\w\.]+', snippet_lines[j + 5].split()[2]).group(0).removesuffix('.decode')
+                            r'[\w\.]+', snippet_lines[j + 5].split()[2]).group(0).removesuffix('.decode')
                         ftype = f"map<{key_type},{value_type}>"
                         break
 
@@ -490,7 +475,7 @@ def compile_proto(files: str, include_path='.'):
         [
             "protol",
             "--in-place",
-            "--create-package",
+            # "--create-package",
             f"--python-out={output_path}",
             "protoc",
             f"--proto-path={include_path}",
@@ -499,6 +484,21 @@ def compile_proto(files: str, include_path='.'):
         check=True,
     )
     write_stderr(f"  -- took {ceil(time() - start_time)}s\n")
+
+
+def read_file(file_path: str) -> str:
+    with open(file_path, 'r', encoding="utf8") as f:
+        return f.read()
+
+
+def write_file(file_path: str, text: str, append=False) -> None:
+    with open(file_path, 'a' if append else 'w', encoding='utf8') as f:
+        f.write(text)
+
+
+def write_stderr(text: str):
+    sys.stderr.write(text)
+    sys.stderr.flush()
 
 
 def main():
