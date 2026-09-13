@@ -238,7 +238,7 @@ class DouyinLiveWebFetcher:
                 if status == 0:
                     self.start(display_text, text, data)
                 elif status == 2:
-                    logger.debug(json.dumps(data, ensure_ascii=False))
+                    # logger.debug(json.dumps(data, ensure_ascii=False))
                     logger.info('未开播或直播已结束')
                 else:
                     logger.info('直播间状态未知')
@@ -255,53 +255,45 @@ class DouyinLiveWebFetcher:
                 return
 
     def get_ttwid(self):
-        response = requests.get(self.live_url, headers=self.headers)
-        response.raise_for_status()
-        return response.cookies.get('ttwid')
-
-    @property
-    def ttwid(self):
         """
         产生请求头部cookie中的ttwid字段，访问抖音网页版直播间首页可以获取到响应cookie中的ttwid
         :return: ttwid
         """
-        if self.__ttwid:
-            return self.__ttwid
-        try:
-            response = self.session.get(self.live_url, headers=self.headers)
-            response.raise_for_status()
-        except Exception as err:
-            logger.error(f"【X】Request the live url error: {err}")
-        else:
-            self.__ttwid = response.cookies.get('ttwid')
-            return self.__ttwid
+        response = requests.get(self.live_url, headers=self.headers)
+        response.raise_for_status()
+        self.__ttwid = response.cookies.get('ttwid')
+        return self.__ttwid
 
     @property
-    def room_id(self):
+    def ttwid(self):
+        if self.__ttwid:
+            return self.__ttwid
+        return self.get_ttwid()
+
+    def get_room_id(self):
         """
         根据直播间的地址获取到真正的直播间roomId，有时会有错误，可以重试请求解决
         :return:room_id
         """
-        if self.__room_id:
-            return self.__room_id
-        url = self.live_url + self.live_id
         headers = {
             "User-Agent": self.user_agent,
             "cookie": f"ttwid={self.ttwid}&msToken={generateMsToken()}; __ac_nonce=0123407cc00a9e438deb4",
         }
-        try:
-            response = self.session.get(url, headers=headers)
-            response.raise_for_status()
-        except Exception as err:
-            logger.error(f"【X】Request the live room url error: {err}")
-        else:
-            match = re.search(r'roomId\\":\\"(\d+)\\"', response.text)
-            if match is None or len(match.groups()) < 1:
-                logger.error("【X】No match found for roomId")
+        response = requests.get(self.live_url + self.live_id, headers=headers)
+        response.raise_for_status()
 
-            self.__room_id = match.group(1)
+        match = re.search(r'roomId\\":\\"(\d+)\\"', response.text)
+        if match is None or len(match.groups()) < 1:
+            raise Exception("【X】No match found for roomId")
 
+        self.__room_id = match.group(1)
+        return self.__room_id
+
+    @property
+    def room_id(self):
+        if self.__room_id:
             return self.__room_id
+        return self.get_room_id()
 
     def get_ac_nonce(self):
         """
@@ -337,17 +329,19 @@ class DouyinLiveWebFetcher:
         logger.debug('正在获取直播间开播状态')
         for retry in range(retries):
             try:
-                nonce = self.get_ac_nonce()
                 msToken = generateMsToken()
-                signature = self.get_ac_signature(nonce)
+                nonce = self.get_ac_nonce()
+                ac_signature = self.get_ac_signature(nonce)
+                ttwid = self.get_ttwid()
+                room_id = self.get_room_id()
                 url = (
                     'https://live.douyin.com/webcast/room/web/enter/?aid=6383'
                     '&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=page_refresh'
                     '&cookie_enabled=true&screen_width=5120&screen_height=1440&browser_language=zh-CN&browser_platform=Win32'
                     '&browser_name=Edge&browser_version=140.0.0.0'
                     f'&web_rid={self.live_id}'
-                    f'&room_id_str={self.room_id}'
-                    '&enter_source=&is_need_double_stream=false&insert_task_id=&live_reason=&msToken=' + msToken)
+                    f'&room_id_str={room_id}'
+                    f'&enter_source=&is_need_double_stream=false&insert_task_id=&live_reason=&msToken={msToken}')
                 query = parse_url(url).query
                 params = {i[0]: i[1] for i in [j.split('=') for j in query.split('&')]}
                 a_bogus = self.get_a_bogus(params)  # 计算a_bogus,成功率不是100%，出现失败时重试即可
@@ -355,7 +349,7 @@ class DouyinLiveWebFetcher:
                 headers = self.headers.copy()
                 headers.update({
                     'Referer': f'https://live.douyin.com/{self.live_id}',
-                    'Cookie': f'ttwid={self.get_ttwid()};__ac_nonce={nonce}; __ac_signature={signature}',
+                    'Cookie': f'ttwid={ttwid};__ac_nonce={nonce}; __ac_signature={ac_signature}',
                 })
                 resp = self.session.get(url, headers=headers, allow_redirects=3)
 
@@ -377,7 +371,9 @@ class DouyinLiveWebFetcher:
                 logger.error(traceback.format_exc())
 
             self.session = requests.Session()  # reset session
-            time.sleep((retry % 3) * 500)
+            interval = (retry % 4) * 1 + 1
+            logger.debug(f"Sleeping for {interval} before retry.")
+            time.sleep(interval)
 
     def read_cookies_file(self):
         """
