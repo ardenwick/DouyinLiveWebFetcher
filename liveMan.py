@@ -256,7 +256,8 @@ class DouyinLiveWebFetcher:
     def get_ttwid(self):
         response = requests.get(self.live_url, headers=self.headers)
         response.raise_for_status()
-        return response.cookies.get('ttwid')
+        self.__ttwid = response.cookies.get('ttwid')
+        return self.__ttwid
 
     @property
     def ttwid(self):
@@ -274,6 +275,21 @@ class DouyinLiveWebFetcher:
         else:
             self.__ttwid = response.cookies.get('ttwid')
             return self.__ttwid
+
+    def get_room_id(self):
+        url = self.live_url + self.live_id
+        headers = {
+            "User-Agent": self.user_agent,
+            "cookie": f"ttwid={self.ttwid}&msToken={generateMsToken()}; __ac_nonce=0123407cc00a9e438deb4",
+        }
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        match = re.search(r'roomId\\":\\"(\d+)\\"', response.text)
+        if match is None or len(match.groups()) < 1:
+            logger.error("【X】No match found for roomId")
+
+        self.__room_id = match.group(1)
+        return self.__room_id
 
     @property
     def room_id(self):
@@ -345,7 +361,7 @@ class DouyinLiveWebFetcher:
                     '&cookie_enabled=true&screen_width=5120&screen_height=1440&browser_language=zh-CN&browser_platform=Win32'
                     '&browser_name=Edge&browser_version=140.0.0.0'
                     f'&web_rid={self.live_id}'
-                    f'&room_id_str={self.room_id}'
+                    f'&room_id_str={self.get_room_id()}'
                     '&enter_source=&is_need_double_stream=false&insert_task_id=&live_reason=&msToken=' + msToken)
                 query = parse_url(url).query
                 params = {i[0]: i[1] for i in [j.split('=') for j in query.split('&')]}
