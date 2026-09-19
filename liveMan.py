@@ -6,9 +6,9 @@
 # @Author:      bubu
 # @Project:     douyinLiveWebFetcher
 
-from audioop import add
 from contextlib import contextmanager
 from datetime import datetime
+from enum import Enum
 from multiprocessing import Condition, Lock
 from pathlib import Path
 from typing import Callable, List, Tuple
@@ -477,6 +477,7 @@ class DouyinLiveWebFetcher:
             'RoomRankMessage': self.on_RoomRankMessage,  # 直播间排行榜信息
             'RoomStreamAdaptationMessage': self._muteMsg,  # 直播间流配置 on_RoomStreamAdaptationMessage
             'LuckyBoxMessage': self.on_LuckyBoxMessage,  # 红包
+            'LuckyBoxEndMessage': self._muteMsg,  # 红包结束，仅含 box_id 信息
             'PreviewCjRpMessage': self.on_PreviewCjRpMessage,  # 红包
             'LuckyBoxRewardMessage': self.on_LuckyBoxRewardMessage,  # 抽奖结果
             'LotteryDrawResultEventMessage': self.on_LotteryDrawResultEventMessage,  # 抽奖结果
@@ -517,6 +518,8 @@ class DouyinLiveWebFetcher:
             'LinkMicBattleMethod': self.on_LinkMicBattleMethod,  # PK
             'LinkMicBattleFinishMethod': self.on_LinkMicBattleFinishMethod,  # PK 结束
             'ProfileViewMessage': self.on_ProfileViewMessage,  # 亲密度
+            'ItemShareMessage': self.on_ItemShareMessage,  # 分享内容
+            'HighlightComment': self.on_HighlightComment,  # 置顶评论
         }
         muted_messages = [k for k, v in method_bindings.items() if v == self._muteMsg]
 
@@ -638,6 +641,7 @@ class DouyinLiveWebFetcher:
             'ExhibitionChatMessage': ['display_text.pieces[].user_value.user'],
             'FansclubMessage': ['user'],
             'GiftMessage': ['user', 'to_user'],
+            'ItemShareMessage': ['share_text.pieces[].user_value.user'],
             'LikeMessage': ['user'],
             'LinkMessage': None,  # None for recursive way
             'LinkMicArmiesMethod': ['user_armies_list[].user_armies[]'],
@@ -706,13 +710,30 @@ class DouyinLiveWebFetcher:
 
     def on_MemberMessage(self, m: Message):
         '''进入直播间消息'''
+        class Action(Enum):
+            ENTER = 1
+            LEAVE = 2
+            SET_SILENCE = 3
+            CANCEL_SILENCE = 4
+            SET_ADMIN = 5
+            CANCEL_ADMIN = 6
+            KICK_OUT = 7
+            SHARE = 8
+            MANAGER_SET_SILENCE = 9
+            MANAGER_CANCEL_SILENCE = 10
+            BLOCK = 11
+            FOLLOW = 20
+
         u = m.user
-        gender = ['X', '男', '女'][u.gender]
-        self.log_msg(
-            f"【进场】[{u.id}][{gender}]("
-            f"{u.pay_grade.level},{u.fans_club.data.level},"
-            f"{u.follow_info.following_count},{u.follow_info.follower_count}"
-            f") {u.nickname}\u200b 来了")
+        gender = {1: '男', 2: '女'}.get(u.gender, 'X')
+        if m.action == Action.ENTER.value:
+            self.log_msg(
+                f"【进场】[{gender}]("
+                f"{u.pay_grade.level},{u.fans_club.data.level},"
+                f"{u.follow_info.following_count},{u.follow_info.follower_count}"
+                f") {render_text(m.common.display_text)}") # “来了”、“通过 分享 来了”、“通过用户推荐来了”
+        else:
+            self.log_msg(f"【进场 action={m.action}】{render_text(m.common.display_text)} JSON={self._MessageToJson(m)}")
 
     def on_SocialMessage(self, m: Message):
         '''社交消息'''
@@ -748,9 +769,18 @@ class DouyinLiveWebFetcher:
 
     def on_ControlMessage(self, m: Message):
         '''直播间状态消息'''
-        if m.action == 1:  # 主播暂时离开
+        class Action(Enum):
+            PAUSE = 1
+            RESUME = 2
+            FINISH = 3
+            FINISH_BY_ADMIN = 4
+            CHANGE_NODE = 5
+            ROOM_FINISH_BY_SWITCH = 6
+            PING_TIMEOUT = 7
+
+        if m.action == Action.PAUSE.value:  # 主播暂时离开
             self.log_msg(f'{render_text(m.common.display_text)}')
-        elif m.action in [3, 4, 6]:
+        elif m.action in [Action.FINISH.value, Action.FINISH_BY_ADMIN.value, Action.ROOM_FINISH_BY_SWITCH.value]:
             tips = m.tips or '直播已结束'
             self.log_msg(tips)
             logger.info(tips)
@@ -1012,3 +1042,14 @@ class DouyinLiveWebFetcher:
 
     def on_ProfileViewMessage(self, m: Message):
         self.log_msg(f'【亲密度】{render_text(m.title)}{render_text(m.sub_title)}')
+
+    def on_ItemShareMessage(self, m: Message):
+        self.log_msg(f'【分享内容】{render_text(m.share_text)} {m.item_style.name} ({m.item_style.icon.url_list[0]})')
+
+    def on_HighlightComment(self, m: Message):
+        if m.action_type == 1:
+            self.log_msg(f'【置顶评论】{m.operator_nickname}\u200b：{m.content}')
+        elif m.action_type == 2:
+            self.log_msg(f'【置顶评论】{m.operator_nickname}\u200b 取消了置顶评论')
+        else:
+            self.log_msg(self._MessageToJson(m))
