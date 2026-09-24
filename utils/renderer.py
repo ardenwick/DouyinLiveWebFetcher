@@ -13,7 +13,10 @@ def format_string(t: str) -> str:
 
 
 def format_image(t: data.TextPieceImage) -> str:
-    return '[image](' + t.image.url_list[0] + ')'
+    r = ''
+    if t.image.url_list:
+        r = '[image](' + t.image.url_list[0] + ')'
+    return r
 
 
 def format_gift(t: data.TextPieceGift) -> str:
